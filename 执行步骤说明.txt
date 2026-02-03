@@ -1,0 +1,701 @@
+RouthSearch 项目执行步骤说明文档
+========================================
+最后更新：2026年2月3日
+
+项目概述
+--------
+RouthSearch 是一个用于确定无人机在不同飞行模式下有效的三维PID参数范围的自动化测试工具。
+该工具包含两个主要模块：
+1. 边界识别模块 (Boundary Identification Module) - 位于 evaluation_script/
+2. 异常行为验证模块 (Misbehavior Validation Module) - 位于 routh_search/
+
+支持的飞控系统和飞行模式：
+- ArduPilot: Brake、Circle、RTL、Zigzag
+- PX4: Hold、Land、Orbit、Return(RTL)
+
+
+一、环境要求
+============
+
+1. 操作系统
+   - Linux (推荐 Ubuntu 18.04/20.04/22.04)
+
+2. 编程语言
+   - Python 3.10
+   - Bash Shell
+
+3. Docker
+   - Docker Engine (用于运行容器化的测试环境)
+   - 需要 sudo 权限
+
+4. 飞控程序
+   - ArduPilot 或 PX4 (根据测试需求)
+
+5. 仿真器
+   - ArduPilot SITL Simulator (用于 ArduPilot 测试)
+   - jMAVSim (用于 PX4 测试)
+
+
+二、依赖安装
+============
+
+2.1 安装 Python 依赖
+--------------------
+必需的 Python 库：
+- pymavlink    # MAVLink 通信协议库
+- matplotlib   # 数据可视化（用于 oracle 模块）
+- pyulog       # PX4 日志分析（仅 PX4 测试需要）
+
+安装命令：
+pip3 install pymavlink matplotlib pyulog
+
+
+2.2 安装 ArduPilot (如果测试 ArduPilot)
+---------------------------------------
+参考官方文档：https://ardupilot.org/dev/docs/building-setup-linux.html
+
+基本步骤：
+1. 克隆 ArduPilot 代码仓库
+   git clone https://github.com/ArduPilot/ardupilot.git
+   cd ardupilot
+   git submodule update --init --recursive
+
+2. 安装构建工具
+   Tools/environment_install/install-prereqs-ubuntu.sh -y
+
+3. 编译 ArduCopter
+   ./waf configure --board sitl
+   ./waf copter
+
+4. 测试 SITL 仿真器
+   Tools/autotest/sim_vehicle.py -v ArduCopter --map --console
+
+
+2.3 安装 PX4 (如果测试 PX4)
+---------------------------
+参考官方文档：https://docs.px4.io/main/en/dev_setup/building_px4.html
+
+基本步骤：
+1. 克隆 PX4 代码仓库
+   git clone https://github.com/PX4/PX4-Autopilot.git
+   cd PX4-Autopilot
+   git submodule update --init --recursive
+
+2. 运行安装脚本
+   bash ./Tools/setup/ubuntu.sh
+
+3. 编译 PX4
+   make px4_sitl_default
+
+4. 安装并测试 jMAVSim
+   参考：https://docs.px4.io/main/en/sim_jmavsim/
+
+
+2.4 Docker 环境准备
+-------------------
+项目使用 Docker 容器运行测试，需要构建以下镜像：
+
+对于 ArduPilot 测试，需要：
+- brake_mode:latest      # Brake 模式测试镜像
+- brake_oracle:latest    # Brake 模式验证镜像
+- circle_mode:latest     # Circle 模式测试镜像
+- circle_oracle:latest   # Circle 模式验证镜像
+- rtl_mode:latest        # RTL 模式测试镜像
+- rtl_oracle:latest      # RTL 模式验证镜像
+- zigzag_mode:latest     # Zigzag 模式测试镜像
+- zigzag_oracle:latest   # Zigzag 模式验证镜像
+
+注意：项目代码中未包含 Dockerfile，您需要自行创建或从项目维护者获取。
+
+
+三、环境配置
+============
+
+3.1 修改环境变量
+----------------
+所有的 shell 脚本都需要配置以下环境变量，请根据实际情况修改：
+
+在 evaluation_script/ 下的各个 shell 脚本中：
+
+export WORKSPACE_BASE_DIR=/home/li/UAVFuzzing          # 修改为你的工作空间路径
+export DEFAULT_PARAM_PATH=$WORKSPACE_BASE_DIR/ardupilot_default_data
+export ARDUPILOT_HOME=/home/li/pgfuzz/ardupilot       # 修改为你的 ArduPilot 安装路径
+export ARDUPILOT_FUZZ_HOME=$WORKSPACE_BASE_DIR/routh_fuzz/ardupilot  # 修改为你的测试路径
+export MODE=brake                                      # 根据测试模式修改
+export ESTIMATE_ABNORMAL_CONFIG=estimated_abnormal_config_${MODE}/${MODE}
+
+示例配置（假设项目在当前目录）：
+export WORKSPACE_BASE_DIR=/home/lqs66/RouthSearch
+export DEFAULT_PARAM_PATH=$WORKSPACE_BASE_DIR/ardupilot_default_data
+export ARDUPILOT_HOME=/home/lqs66/ardupilot
+export ARDUPILOT_FUZZ_HOME=$WORKSPACE_BASE_DIR/routh_search/ardupilot
+
+对于 PX4 测试，需要设置类似的 PX4_HOME 等变量。
+
+
+3.2 创建必要的目录结构
+----------------------
+确保以下目录存在：
+- routh_search/ardupilot/logs/
+- routh_search/ardupilot/oracle_logs/
+- routh_search/ardupilot/res/
+- routh_search/ardupilot/routh_data_dir/estimated_abnormal_config_*/
+- routh_search/ardupilot/routh_fuzz_data_dir/estimated_abnormal_config_*/
+
+对于每个测试模式，都需要相应的目录结构。
+
+
+3.3 配置默认参数
+----------------
+ardupilot_default_data/mav.parm 文件包含了 ArduPilot 的默认参数配置。
+这是测试的基准配置，测试时会在此基础上修改 PID 参数。
+
+对于 PX4，需要准备类似的默认参数文件。
+
+
+3.4 核心脚本文件说明
+--------------------
+
+项目中有三类核心脚本文件，各自承担不同的功能：
+
+【飞行任务脚本】- 执行具体的飞行测试
+位置：routh_search/ardupilot/ 或 routh_search/px4/
+
+ArduPilot 飞行任务脚本：
+1. brake_mode.py
+   作用：执行 Brake（刹车）模式测试
+   流程：起飞 → 飞向目标点 → 切换到 BRAKE 模式 → 记录日志
+   输入：PID 配置文件（JSON格式）
+   输出：飞行日志（.BIN 文件）
+
+2. circle_mode.py
+   作用：执行 Circle（圆周飞行）模式测试
+   流程：起飞 → 设置圆心和半径 → 切换到 CIRCLE 模式 → 记录圆周飞行数据
+   输入：PID 配置文件
+   输出：飞行日志
+
+3. rtl_mode.py
+   作用：执行 RTL（Return to Launch，返航）模式测试
+   流程：起飞 → 飞向远点 → 切换到 RTL 模式 → 观察返航过程
+   输入：PID 配置文件
+   输出：飞行日志
+
+4. zigzag_mode.py
+   作用：执行 Zigzag（之字形飞行）模式测试
+   流程：起飞 → 切换到 ZIGZAG 模式 → 执行之字形航线 → 记录飞行数据
+   输入：PID 配置文件
+   输出：飞行日志
+
+PX4 飞行任务脚本：
+1. px4_hold_mode.py
+   作用：执行 Hold（悬停）模式测试
+   流程：起飞到指定高度 → 切换到 HOLD 模式 → 观察悬停稳定性
+
+2. px4_land_mode.py
+   作用：执行 Land（降落）模式测试
+   流程：起飞 → 切换到 LAND 模式 → 记录降落过程
+
+3. px4_orbit_mode.py
+   作用：执行 Orbit（轨道飞行）模式测试
+   流程：起飞 → 设置轨道参数 → 执行轨道飞行
+
+4. px4_rtl_mode.py
+   作用：执行 PX4 的 RTL 模式测试
+   流程：起飞 → 飞离 → 返航
+
+【Oracle 验证脚本】- 分析日志判断测试结果
+位置：routh_search/ardupilot/ 或 routh_search/px4/
+
+ArduPilot Oracle 脚本：
+1. brake_mode_oracle.py
+   作用：分析 Brake 模式飞行日志，判断刹车性能是否正常
+   检测内容：
+   - 刹车后是否快速停止
+   - 位置偏移是否在合理范围
+   - 是否出现振荡或不稳定
+   输入：.BIN 日志文件 + PID 参数名称
+   输出：0（有效配置）或 1（无效配置）+ 结果文件（.result）
+
+2. circle_mode_oracle.py
+   作用：分析 Circle 模式日志，判断圆周飞行是否稳定
+   检测内容：
+   - 轨迹是否接近圆形
+   - 半径是否稳定
+   - 高度是否保持
+   - 是否出现振荡
+   输入：.BIN 日志文件 + PID 参数名称
+   输出：0（有效）或 1（无效）+ 结果文件
+
+3. rtl_mode_oracle.py
+   作用：分析 RTL 模式日志，判断返航是否正常
+   检测内容：
+   - 是否成功返回起始点
+   - 返航路径是否合理
+   - 高度控制是否正常
+
+4. zigzag_mode_oracle.py
+   作用：分析 Zigzag 模式日志，判断之字形飞行是否正常
+   检测内容：
+   - 航线跟踪精度
+   - 转向是否平滑
+   - 是否出现振荡
+
+PX4 Oracle 脚本：
+1. px4_hold_mode_oracle.py
+   作用：分析 Hold 模式日志（.ulg 文件）
+   检测内容：悬停稳定性、位置偏移
+
+2. px4_land_mode_oracle.py
+   作用：分析 Land 模式日志
+   检测内容：降落速度、降落精度
+
+3. px4_orbit_mode_oracle.py
+   作用：分析 Orbit 模式日志
+   检测内容：轨道精度、速度稳定性
+
+4. px4_rtl_mode_oracle.py
+   作用：分析 PX4 RTL 模式日志
+   检测内容：返航成功率、路径合理性
+
+【工具类脚本】- 提供通用功能
+1. ArdupilotUtil.py
+   作用：封装 ArduPilot MAVLink 通信功能
+   主要功能：
+   - 连接飞控（通过 UDP 端口 14550）
+   - 解锁/上锁（arm_throttle/disarm）
+   - 起飞命令（takeoff）
+   - 切换飞行模式（change_mode）
+   - 设置参数（set_param）
+   - 发送导航命令（guided_fly_to）
+   - 读取参数和航点
+
+2. PX4Util.py
+   作用：封装 PX4 MAVLink 通信功能
+   功能与 ArdupilotUtil.py 类似，但适配 PX4 的命令格式
+
+3. start_ardupilot.py
+   作用：自动启动 ArduPilot SITL 仿真器
+   功能：在新终端窗口中启动 sim_vehicle.py
+   使用：在测试脚本中自动化启动仿真器
+
+4. kill_ardupilot.py
+   作用：终止 ArduPilot SITL 进程
+   功能：清理测试环境，确保下次测试干净启动
+
+【自动化测试脚本】- 执行大规模参数搜索
+位置：evaluation_script/
+
+每个飞行模式都有两个脚本：
+
+1. *_identify_bounder.sh（边界识别脚本）
+   作用：精确识别有效/无效 PID 参数的边界
+   策略：
+   - 从参数空间的边缘开始搜索
+   - 使用二分法或自适应步长
+   - 记录边界配置
+   执行时间：较短（几小时到一天）
+   适用场景：快速找到边界范围
+
+2. *_fuzz.sh（模糊测试脚本）
+   作用：在参数空间中进行更全面的搜索
+   策略：
+   - 更细粒度的参数扫描
+   - 验证边界识别的结果
+   - 发现更多边界案例
+   执行时间：较长（默认 48 小时）
+   适用场景：详尽的参数空间探索
+
+示例：brake_routh_identify_bounder.sh
+- 搜索 PSC_VELXY_P、PSC_VELXY_I、PSC_VELXY_D 参数
+- P: 0.1 → 0.7，步长 0.1
+- I: 0.02 → 1.0，步长 0.01
+- D: 0.0 → 1.0，步长 0.001
+- 对每个组合：启动 Docker 容器 → 执行测试 → 运行 Oracle → 记录结果
+- 生成边界配置文件
+
+【辅助脚本】
+位置：routh_search/ardupilot/（可能存在）
+
+generate_abnormal_config.py（在 shell 脚本中被调用）
+作用：生成异常配置的 JSON 文件
+功能：根据测试结果生成边界配置记录
+
+
+四、项目执行流程
+================
+
+4.1 手动执行单次测试（了解工作流程）
+------------------------------------
+
+步骤1：启动 ArduPilot SITL 仿真器
+cd /path/to/ardupilot
+Tools/autotest/sim_vehicle.py -v ArduCopter --map --console -w
+
+步骤2：准备 PID 配置文件
+编辑或创建配置文件，例如：
+echo '{"PSC_VELXY_P": 0.5, "PSC_VELXY_I": 0.15, "PSC_VELXY_D": 0.000}' > config.json
+
+步骤3：运行飞行任务
+cd /path/to/RouthSearch/routh_search/ardupilot
+python3 brake_mode.py config.json
+
+这会执行一个 Brake 模式的飞行任务：
+- 切换到 GUIDED 模式
+- 解锁并起飞到 30 米
+- 飞行到指定位置
+- 切换到 BRAKE 模式
+- 观察无人机行为
+
+步骤4：分析飞行日志（Oracle 验证）
+python3 brake_mode_oracle.py /path/to/logs/xxx.BIN PSC_VELXY_P,PSC_VELXY_I,PSC_VELXY_D
+
+Oracle 会分析飞行日志，判断该 PID 配置是否有效（0=有效，1=无效）。
+
+
+4.2 使用 Docker 容器执行测试
+-----------------------------
+
+如果已构建好 Docker 镜像，可以使用容器化的方式执行：
+
+# 运行飞行任务容器
+sudo docker run --cpuset-cpus 4 -d --rm \
+  -v /path/to/config:/ardu-sim/pids \
+  -v /path/to/logs:/ardu-sim/logs \
+  brake_mode:latest
+
+# 运行 Oracle 验证容器
+sudo docker run --cpuset-cpus 4 -d --rm \
+  -e PID_PARMS="PSC_VELXY_P,PSC_VELXY_I,PSC_VELXY_D" \
+  -v /path/to/logs:/ardu-sim/logs \
+  -v /path/to/results:/ardu-sim/results \
+  brake_oracle:latest
+
+
+4.3 自动化边界识别（主要功能）
+-------------------------------
+
+这是项目的核心功能，自动搜索有效/无效 PID 参数边界。
+
+步骤1：选择测试模式和脚本
+cd /path/to/RouthSearch/evaluation_script/brake_routh
+
+步骤2：修改脚本中的环境变量（见 3.1 节）
+
+步骤3：运行边界识别脚本
+bash brake_routh_identify_bounder.sh
+
+或运行模糊测试脚本：
+bash brake_routh_fuzz.sh
+
+脚本会自动：
+1. 在 PID 参数空间中进行搜索
+2. 对每个参数组合执行飞行测试
+3. 使用 Oracle 判断结果
+4. 记录有效和无效配置的边界
+5. 生成结果文件：
+   - all_config.json: 所有测试的配置
+   - first_step_res.json: 第一阶段结果
+   - second_step_res.json: 第二阶段结果
+   - res_bounder.json: 识别出的边界配置
+
+步骤4：查看结果
+结果保存在：
+routh_search/ardupilot/routh_data_dir/estimated_abnormal_config_brake/
+
+注意：
+- 脚本默认运行 48 小时（可修改 end_time）
+- 需要大量计算资源和时间
+- 建议在后台或 screen/tmux 中运行
+
+
+4.4 其他飞行模式测试
+--------------------
+
+对于不同的飞行模式，步骤类似：
+
+Circle 模式：
+cd evaluation_script/circle_routh
+bash circle_routh_identify_bounder.sh
+
+RTL 模式：
+cd evaluation_script/rtl_routh
+bash rtl_routh_identify_bounder.sh
+
+Zigzag 模式：
+cd evaluation_script/zigzag_routh
+bash zigzag_routh_identify_bounder.sh
+
+PX4 模式（Hold、Land、Orbit、Return）：
+cd evaluation_script/px4_hold_roll_roth
+bash px4_hold_roll_routh_identify_bounder.sh
+（其他 PX4 模式类似）
+
+
+五、关键参数说明
+================
+
+5.1 PID 参数范围
+----------------
+脚本中定义了 PID 参数的搜索范围：
+
+P (比例项):
+p_start=0.1      # 起始值
+p_end=6.0        # 结束值
+p_step=0.1       # 搜索步长
+
+I (积分项):
+i_start=0.02
+i_end=1.0
+i_step=0.01
+
+D (微分项):
+d_start=0.000
+d_end=1.0
+d_step=0.001
+
+这些值可以根据需要在脚本中修改。
+
+
+5.2 测试的 PID 参数
+-------------------
+不同飞控系统测试的参数不同：
+
+ArduPilot（所有模式统一）:
+- Brake/Circle/RTL/Zigzag: PSC_VELXY_P, PSC_VELXY_I, PSC_VELXY_D
+  这些参数控制水平速度（X-Y平面），是影响水平移动飞行稳定性的核心参数
+  - PSC_VELXY_P: 速度环比例增益
+  - PSC_VELXY_I: 速度环积分增益
+  - PSC_VELXY_D: 速度环微分增益
+
+PX4（所有模式统一）:
+- Hold/Land/Orbit/Return: MC_ROLLRATE_P, MC_ROLLRATE_I, MC_ROLLRATE_D
+  这些参数控制横滚角速度，是姿态控制的基础参数
+  - MC_ROLLRATE_P: 横滚角速度比例增益
+  - MC_ROLLRATE_I: 横滚角速度积分增益
+  - MC_ROLLRATE_D: 横滚角速度微分增益
+
+
+5.3 时间限制
+------------
+脚本有运行时间限制：
+start_time=$(date +%s)
+end_time=$((start_time + 48 * 3600))  # 48 小时
+
+可以修改 48 * 3600 来调整运行时长（单位：秒）。
+
+
+六、故障排查
+============
+
+6.1 常见问题
+
+问题1：无法连接到 MAVLink
+错误：waiting for heartbeat
+解决：
+- 确认 SITL 仿真器已启动
+- 检查端口 14550 是否被占用
+- 确认防火墙设置
+
+问题2：Python 模块导入失败
+错误：ModuleNotFoundError: No module named 'pymavlink'
+解决：
+pip3 install pymavlink matplotlib pyulog
+
+问题3：Docker 镜像不存在
+错误：Unable to find image 'brake_mode:latest' locally
+解决：
+- 需要自行构建 Docker 镜像
+- 或联系项目维护者获取 Dockerfile
+
+问题4：环境变量错误
+错误：ARDUPILOT_HOME environment variable is not set!
+解决：
+- 在脚本中设置正确的环境变量
+- 或在 ~/.bashrc 中导出环境变量
+
+问题5：权限不足
+错误：Permission denied
+解决：
+- 确保脚本有执行权限：chmod +x *.sh
+- Docker 命令需要 sudo 权限
+- 确保日志目录有写入权限
+
+问题6：磁盘空间不足
+解决：
+- 定期清理日志文件（*.BIN、*.ulg）
+- 脚本会自动删除已处理的日志
+
+
+6.2 调试建议
+
+1. 先手动执行单次测试，确保基本流程正常
+2. 检查日志输出，了解错误发生的位置
+3. 使用小的参数范围进行测试验证
+4. 监控系统资源（CPU、内存、磁盘）
+5. 使用 screen 或 tmux 保持会话持久化
+
+
+七、输出结果说明
+================
+
+7.1 结果文件
+------------
+测试完成后会生成多个 JSON 文件：
+
+all_config.json
+- 所有测试过的 PID 配置
+
+first_step_res.json
+- 第一阶段搜索的结果（有效配置）
+
+second_step_res.json
+- 第二阶段验证的结果
+
+res_bounder.json
+- 识别出的边界配置（有效/无效的分界线）
+
+config_to_check.json
+- 需要进一步验证的配置
+
+
+7.2 日志文件
+------------
+ArduPilot 日志：
+- *.BIN 文件：二进制飞行日志
+- LASTLOG.TXT：最后一次日志的编号
+
+PX4 日志：
+- *.ulg 文件：PX4 飞行日志
+
+
+7.3 Oracle 结果
+---------------
+Oracle 输出格式：
+- 0：配置有效（无异常行为）
+- 1：配置无效（检测到异常行为）
+
+结果保存在 res/ 目录下的 *.result 文件中。
+
+
+八、项目扩展
+============
+
+8.1 添加新的飞行模式
+--------------------
+1. 在 routh_search/ardupilot/ 或 routh_search/px4/ 中：
+   - 创建 xxx_mode.py（飞行任务脚本）
+   - 创建 xxx_mode_oracle.py（验证脚本）
+
+2. 在 evaluation_script/ 中：
+   - 创建对应的目录
+   - 编写测试脚本（参考现有脚本）
+
+3. 准备 Docker 镜像（如果使用容器化）
+
+
+8.2 修改测试参数
+----------------
+在脚本中修改：
+- PID 参数范围（p_start, p_end 等）
+- 搜索步长（p_step, i_step, d_step）
+- 测试的参数名称（PSC_VELXY_P 等）
+- 飞行任务的时间和位置
+
+
+8.3 优化 Oracle 逻辑
+--------------------
+在 *_oracle.py 文件中修改判断逻辑：
+- 调整异常行为的阈值
+- 添加新的检测指标
+- 改进数据分析方法
+
+
+九、性能优化建议
+================
+
+1. 使用多核并行
+   - 修改 DOCKER_CPUSET 使用不同的 CPU 核心
+   - 同时运行多个测试脚本
+
+2. 调整搜索策略
+   - 减小步长以提高精度（增加时间）
+   - 增大步长以加快搜索（降低精度）
+   - 使用自适应步长
+
+3. 资源分配
+   - 为 Docker 容器分配足够的 CPU 和内存
+   - 使用 SSD 提高 I/O 性能
+   - 确保网络带宽充足（如果使用远程仿真）
+
+4. 缓存和重用
+   - 保存已测试的配置，避免重复测试
+   - 使用数据库存储结果
+
+
+十、参考文献和链接
+==================
+
+ArduPilot 文档：
+- 官网：https://ardupilot.org/
+- SITL 仿真：https://ardupilot.org/dev/docs/sitl-simulator-software-in-the-loop.html
+- 构建指南：https://ardupilot.org/dev/docs/building-setup-linux.html
+
+PX4 文档：
+- 官网：https://px4.io/
+- 开发环境：https://docs.px4.io/main/en/dev_setup/building_px4.html
+- jMAVSim：https://docs.px4.io/main/en/sim_jmavsim/
+
+MAVLink 协议：
+- 官网：https://mavlink.io/
+- pymavlink 文档：https://mavlink.io/en/mavgen_python/
+
+Docker：
+- 官网：https://www.docker.com/
+- Ubuntu 安装：https://docs.docker.com/engine/install/ubuntu/
+
+
+十一、快速开始示例
+==================
+
+假设您的环境已经配置好，这里是一个完整的测试流程示例：
+
+# 1. 设置环境变量
+export WORKSPACE_BASE_DIR=/home/lqs66/RouthSearch
+export ARDUPILOT_HOME=/home/lqs66/ardupilot
+export ARDUPILOT_FUZZ_HOME=$WORKSPACE_BASE_DIR/routh_search/ardupilot
+
+# 2. 启动 ArduPilot SITL（在新终端）
+cd $ARDUPILOT_HOME
+Tools/autotest/sim_vehicle.py -v ArduCopter --map --console -w
+
+# 3. 运行单次测试（在另一个终端）
+cd $WORKSPACE_BASE_DIR/routh_search/ardupilot
+echo '{"PSC_VELXY_P": 0.5, "PSC_VELXY_I": 0.15, "PSC_VELXY_D": 0.0}' > test_config.json
+python3 brake_mode.py test_config.json
+
+# 4. 分析结果
+python3 brake_mode_oracle.py logs/xxx.BIN PSC_VELXY_P,PSC_VELXY_I,PSC_VELXY_D
+
+# 5. 运行自动化测试（如果 Docker 镜像已准备好）
+cd $WORKSPACE_BASE_DIR/evaluation_script/brake_routh
+# 修改脚本中的环境变量后运行
+bash brake_routh_identify_bounder.sh
+
+
+结论
+====
+
+RouthSearch 是一个复杂的自动化测试系统，需要：
+1. 完整的开发环境（Python、ArduPilot/PX4、仿真器）
+2. Docker 容器支持
+3. 正确的配置和足够的计算资源
+
+建议：
+- 从简单的手动测试开始，熟悉流程
+- 逐步过渡到自动化测试
+- 根据实际需求调整参数和脚本
+
+如有问题，请参考项目 README.md 或联系项目维护者。
+
+========================================
+文档结束

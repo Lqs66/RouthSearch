@@ -1,12 +1,16 @@
 
-export WORKSPACE_BASE_DIR=/home/li/UAVFuzzing
+export WORKSPACE_BASE_DIR=/home/lqs66/RouthSearch
 export DEFAULT_PARAM_PATH=$WORKSPACE_BASE_DIR/ardupilot_default_data
-export ARDUPILOT_HOME=/home/li/pgfuzz/ardupilot
-export ARDUPILOT_FUZZ_HOME=$WORKSPACE_BASE_DIR/routh_fuzz/ardupilot
+export ARDUPILOT_HOME=/home/lqs66/desktop/ardupilot
+export ARDUPILOT_FUZZ_HOME=$WORKSPACE_BASE_DIR/routh_search/ardupilot
 export MODE=brake
 export ESTIMATE_ABNORMAL_CONFIG=estimated_abnormal_config_${MODE}/${MODE}
 DOCKER_CPUSET=4
 first_step_end_flag=1
+
+# fix bug: create dir if not exist
+mkdir -p $ARDUPILOT_FUZZ_HOME/routh_fuzz_data_dir/${ESTIMATE_ABNORMAL_CONFIG}/logs
+mkdir -p $ARDUPILOT_FUZZ_HOME/routh_fuzz_data_dir/${ESTIMATE_ABNORMAL_CONFIG}/res
 
 > $ARDUPILOT_FUZZ_HOME/routh_fuzz_data_dir/${ESTIMATE_ABNORMAL_CONFIG}/all_config.json
 > $ARDUPILOT_FUZZ_HOME/routh_fuzz_data_dir/${ESTIMATE_ABNORMAL_CONFIG}/first_step_res.json

@@ -8,6 +8,10 @@ export ESTIMATE_ABNORMAL_CONFIG=estimated_abnormal_config_${MODE}/${MODE}
 DOCKER_CPUSET=3
 first_step_end_flag=1
 
+# fix bug: create dir if not exist
+mkdir -p $ARDUPILOT_FUZZ_HOME/routh_data_dir/${ESTIMATE_ABNORMAL_CONFIG}/logs
+mkdir -p $ARDUPILOT_FUZZ_HOME/routh_data_dir/${ESTIMATE_ABNORMAL_CONFIG}/res
+
 > $ARDUPILOT_FUZZ_HOME/routh_data_dir/${ESTIMATE_ABNORMAL_CONFIG}/all_config.json
 > $ARDUPILOT_FUZZ_HOME/routh_data_dir/${ESTIMATE_ABNORMAL_CONFIG}/first_step_res.json
 > $ARDUPILOT_FUZZ_HOME/routh_data_dir/${ESTIMATE_ABNORMAL_CONFIG}/second_step_res.json
